@@ -22,7 +22,7 @@ type Publication = {
   epoch: number;
   revision?: string;
   blocked: boolean;
-  mutation?: { invalidatesAuthority: boolean; receipt?: DevicePairingCommitReceipt };
+  mutation?: { receipt?: DevicePairingCommitReceipt };
   complete: boolean;
   rows: Map<string, DevicePairingBindingFact>;
   nodes?: DevicePairingNodeSnapshot;
@@ -194,9 +194,9 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
       }
       return captured.nodes;
     },
-    beginMutation(invalidatesAuthority: boolean) {
+    beginMutation() {
       captured.epoch++;
-      const mutation: NonNullable<Publication["mutation"]> = { invalidatesAuthority };
+      const mutation: NonNullable<Publication["mutation"]> = {};
       captured.mutation = mutation;
       return {
         prepare(receipt: DevicePairingCommitReceipt) {
@@ -248,7 +248,12 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
   };
 }
 
-/** Unknown facts suppress use without declaring an otherwise live node revoked. */
+/**
+ * Unknown facts suppress use without declaring an otherwise live node revoked.
+ * In-flight writes are not unknown: rows stay authoritative until COMMIT, and the pending
+ * services below install a committed receipt before this read. Gateway revocations also
+ * retire live clients directly.
+ */
 export function getPublishedPairedDeviceBinding(
   deviceId: string,
   baseDir?: string,
@@ -263,7 +268,6 @@ export function getPublishedPairedDeviceBinding(
   if (
     !publication ||
     publication.blocked ||
-    publication.mutation?.invalidatesAuthority ||
     (!publication.complete && !publication.rows.has(deviceId))
   ) {
     throw new Error("Device pairing authority requires a current worker publication");
