@@ -20,8 +20,8 @@ import {
 // and an aborted verification fails an otherwise healthy update.
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
-  afterEach(async () => {
-    await cleanup();
+  afterEach(() => {
+    cleanup();
   }),
 );
 
