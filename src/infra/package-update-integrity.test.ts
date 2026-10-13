@@ -1,3 +1,4 @@
+import type { BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -186,17 +187,19 @@ describe("package integrity reader", () => {
     let now = performance.now();
     vi.spyOn(performance, "now").mockImplementation(() => now);
 
-    // The walk stats each path exactly once, so a second lstat of a path is the
-    // drift sweep re-stat'ing it. Spending the budget there is what the batched
-    // sweep has to keep classifying as a resource failure.
+    // The walk stats each path exactly once, so a repeat of a path is the drift
+    // sweep re-stat'ing it — except the root, which rootEntry stats and then the
+    // tree's initial visit stats again, both during traversal. Excluding it makes
+    // the first repeat the sweep's own read, which is where the budget must be
+    // spent for this case to mean anything.
     const lstat = fs.lstat.bind(fs);
     const seen = new Set<string>();
     vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
       const key = String(args[0]);
-      const isSweep = seen.has(key);
+      const isSweepRead = key !== root && seen.has(key);
       seen.add(key);
       const stat = await lstat(...args);
-      if (isSweep) {
+      if (isSweepRead) {
         now += 60_000;
       }
       return stat;
