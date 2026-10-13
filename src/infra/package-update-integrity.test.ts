@@ -1,5 +1,4 @@
-import type { BigIntStats } from "node:fs";
-import * as fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -62,7 +61,9 @@ async function observe(root: string) {
   return observed;
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("sweepForDrift", () => {
   it("accepts a tree whose entries all still match", async () => {
@@ -171,13 +172,42 @@ describe("package integrity reader", () => {
     );
   });
 
-  it("reports the budget it was constructed with when the walk exceeds it", async () => {
-    const root = await createPackageFixture();
-    const reader = createPackageIntegrityReader(1);
+  it("surfaces a budget exhausted during the sweep as a timeout, not as drift", async () => {
+    // A slow disk that spends the whole budget inside the sweep must still report
+    // a resource error: callers only take their directory-identity fallback for
+    // `isPackageIntegrityResourceError`, so misclassifying it as drift would
+    // abort an update that could have degraded to a warning instead.
+    //
+    // The clock is controlled rather than real — `performance.now` is stubbed and
+    // advanced from inside the sweep's own read, so the deadline expires at a
+    // chosen point instead of depending on host scheduling.
+    const root = await createPackageFixture(8);
+
+    let now = performance.now();
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+
+    // The walk stats each path exactly once, so a second lstat of a path is the
+    // drift sweep re-stat'ing it. Spending the budget there is what the batched
+    // sweep has to keep classifying as a resource failure.
+    const lstat = fs.lstat.bind(fs);
+    const seen = new Set<string>();
+    vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
+      const key = String(args[0]);
+      const isSweep = seen.has(key);
+      seen.add(key);
+      const stat = await lstat(...args);
+      if (isSweep) {
+        now += 60_000;
+      }
+      return stat;
+    });
+
+    const reader = createPackageIntegrityReader(1_000);
     const error = await reader.rootEntry(root).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(PackageIntegrityTimeoutError);
     expect(isPackageIntegrityResourceError(error)).toBe(true);
-    expect((error as PackageIntegrityTimeoutError).budgetMs).toBe(1);
+    // Crucially not the generic drift refusal.
+    expect((error as Error).message).not.toMatch(/tree changed/);
   });
 
   it("produces the same fingerprint across repeated walks of an unchanged tree", async () => {

@@ -687,18 +687,19 @@ describe("npm rollback content diagnostics", () => {
           await fs.unlink(cache);
           await fs.symlink("../dist/index.js", cache);
         } else if (change === "cache during scan") {
-          // The walk has admitted every entry by the time the first file is
-          // hashed, and the drift sweep has not re-stat'ed anything yet. Swapping
-          // the cache here is the same point whether the sweep runs sequentially
-          // or in batches, so only the entry recheck can catch it.
-          let replaced = false;
-          interceptPackageFileHashes(async (file, _stat, next) => {
-            if (!replaced) {
-              replaced = true;
+          // The walk stats each path exactly once, so a second lstat of the cache
+          // is the drift sweep re-stat'ing it. Substituting before that call makes
+          // the sweep observe the change, which holds whether the sweep runs
+          // sequentially or in batches. Mutating after it would let the sweep
+          // record the entry as unchanged.
+          const lstat = fs.lstat.bind(fs);
+          let cacheReads = 0;
+          vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+            if (String(args[0]) === cache && ++cacheReads === 2) {
               await fs.unlink(cache);
               await fs.symlink("../dist/index.js", cache);
             }
-            return next();
+            return lstat(...args);
           });
         } else {
           const before = await fs.stat(entry);
